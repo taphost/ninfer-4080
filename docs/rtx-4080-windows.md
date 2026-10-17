@@ -71,6 +71,37 @@ Linux path uses. The Windows build is made correct by the fixes committed in
 
 Every change is platform-guarded, so the Linux (GCC/Clang) path stays bit-identical.
 
+## CUDA graph decode fallback
+
+The Windows 4080 build initially crashed at startup:
+
+```
+FATAL server failed during startup | CUDA Graph executable update failed:
+cudaErrorGraphExecUpdateFailure (update result 5)
+```
+
+**Cause.** `update result 5` is `cudaGraphExecUpdateErrorParametersChanged`. The ordinary/MTP
+decode family assigns one `topology_class` to every frontier tier, so `cudaGraphExecUpdate` is
+called when moving between tiers. Context-size-dependent kernels (envelope `max_visible_keys`,
+grid `heads × splits × batch`, `__grid_constant__` TMA descriptors) change parameters at those
+boundaries, so the driver rejects the in-place update. DFlash is unaffected because it gives each
+tier its own `topology_class`, so it never calls `cudaGraphExecUpdate`.
+
+**Fix.** On a failed update, re-instantiate the executable from the current tier definition
+instead of failing. Error 5 means only parameters differ (the topology is identical), and
+`instantiate()` calls `reset()` first, so there is no leak or double-free. A failed
+`cudaGraphExecUpdate` also leaves a pending `cudaErrorGraphExecUpdateFailure` in the runtime, so
+the fallback clears it with `cudaGetLastError()` before re-instantiating; otherwise a later kernel
+launch (e.g. the gated-delta-net fold kernel) aborts on the stale status. The fallback is gated by
+a runtime flag (`set_graph_update_fallback`, default on); disabling it restores the original
+throwing behavior.
+
+**Behavior.** The fallback fires only at tier boundaries where `cudaGraphExecUpdate` fails, so
+`CUDA Graph update failed, re-instantiating executable` lines may appear in the startup log (as
+they did for the ordinary/MTP decode family) or be absent when every update succeeds in place. It
+keeps one resident executable per shared topology (destroy + re-instantiation), which keeps VRAM
+low on the 16 GB card; the cost is a re-instantiation at each boundary crossed.
+
 ## Tests
 
 The portable `u128` host test (`tests/test_portable_u128.cpp`) compares the emulation against

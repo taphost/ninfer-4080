@@ -694,7 +694,7 @@ DecodeGraphExecutable& install_graph_profile(DecodeGraphFamily& family, DecodeGr
     DecodeGraphTopology& topology   = select_graph_topology(family, profile.topology_class, label);
     const std::size_t profile_index = static_cast<std::size_t>(&profile - family.profiles.data());
     if (topology.installed_profile != profile_index) {
-        topology.executable.update(profile.definition);
+        topology.executable.update_or_reinstantiate(profile.definition);
         topology.installed_profile = profile_index;
     }
     return topology.executable;
@@ -729,7 +729,7 @@ void instantiate_graph_family(DecodeGraphFamily& family, const char* label, Devi
     const auto install_and_upload = [&](DecodeGraphTopology& topology, std::size_t profile_index) {
         DecodeGraphProfile& profile = family.profiles[profile_index];
         if (topology.installed_profile != profile_index) {
-            topology.executable.update(profile.definition);
+            topology.executable.update_or_reinstantiate(profile.definition);
             topology.installed_profile = profile_index;
         }
         topology.executable.upload(device.stream);

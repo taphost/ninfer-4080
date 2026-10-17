@@ -10,6 +10,14 @@
 namespace ninfer {
 namespace {
 
+// Runtime policy for graph updates: when cudaGraphExecUpdate fails (parameters changed in a
+// way the driver cannot apply in place), re-instantiate the executable instead of failing.
+// Defaults on; disabled via set_graph_update_fallback(false) restores the throwing behavior.
+bool g_graph_update_fallback = true;
+
+} // namespace
+namespace {
+
 void log_cuda_error(const char* op, cudaError_t err) noexcept {
     if (err != cudaSuccess) {
         std::fprintf(stderr, "CUDA cleanup failed during %s: %s: %s\n", op, cudaGetErrorName(err),
@@ -125,9 +133,45 @@ void DecodeGraphExecutable::update(const DecodeGraphDefinition& definition) {
     cudaGraphExecUpdateResultInfo result{};
     const cudaError_t err = cudaGraphExecUpdate(exec_, definition.graph_, &result);
     if (err != cudaSuccess || result.result != cudaGraphExecUpdateSuccess) {
+        // A failed update leaves a pending cudaErrorGraphExecUpdateFailure in the runtime. Clear
+        // it so a subsequent launch (e.g. update_or_reinstantiate's re-instantiation fallback)
+        // does not abort on a stale status; the thrown exception still reports the failure.
+        cudaGetLastError();
         throw std::runtime_error(
             "CUDA Graph executable update failed: " + std::string(cudaGetErrorName(err)) +
             " (update result " + std::to_string(static_cast<int>(result.result)) + ")");
+    }
+}
+
+void DecodeGraphExecutable::set_graph_update_fallback(bool enabled) noexcept {
+    g_graph_update_fallback = enabled;
+}
+
+bool DecodeGraphExecutable::graph_update_fallback() noexcept {
+    return g_graph_update_fallback;
+}
+
+void DecodeGraphExecutable::update_or_reinstantiate(const DecodeGraphDefinition& definition) {
+    // Empty inputs are a programming error, not a fallback candidate: keep update()'s contract.
+    if (!ready() || !definition.ready()) {
+        update(definition);
+        return;
+    }
+
+    try {
+        update(definition);
+    } catch (const std::exception& e) {
+        if (!g_graph_update_fallback) {
+            // Fallback disabled: behave exactly like update().
+            throw std::runtime_error(std::string("CUDA Graph executable update failed (fallback disabled): ") + e.what());
+        }
+
+        // Parameters changed in an unsupported way (e.g. context-size dependent kernels).
+        // The topology is identical — only the parameters differ — so rebuild the executable
+        // from the new definition instead of failing startup.
+        std::fprintf(stderr, "CUDA Graph update failed, re-instantiating executable: %s\n", e.what());
+        reset();
+        instantiate(definition);
     }
 }
 
