@@ -18,6 +18,9 @@ no registered Q4-or-wider allocation fits a 16 GB card at 100K context. The engi
 inherited: paged KV, compatible-prefix reuse, CUDA Graphs, speculative decoding, reasoning-effort
 control, the OpenAI/Anthropic-compatible APIs, and the ReplaySSM state transactions all work as
 documented in [docs/](docs/).
+This fork also builds and runs natively on Windows 11 (MSVC + CUDA, vcpkg-managed dependencies);
+the Windows path is built and validated on the RTX 4080 (`CMAKE_CUDA_ARCHITECTURES=89`), so it is
+no longer inherited but untested.
 
 ## TL;DR
 

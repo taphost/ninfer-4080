@@ -13,6 +13,8 @@
 #include <optional>
 #include <span>
 
+#include "runtime/portable_u128.h"
+
 namespace ninfer::runtime {
 
 using ::ninfer::FinishReason;
@@ -23,6 +25,7 @@ using ::ninfer::ResolvedSamplingParameters;
 using ::ninfer::StopPolicy;
 using ::ninfer::StopString;
 using ::ninfer::TokenId;
+using U128 = ::ninfer::detail::u128;
 
 // One Program execution may alternate between Host submission, a blocking Device completion
 // wait, and Host post-processing. The three monotonic components are returned to Engine as part of
@@ -244,15 +247,20 @@ struct PrefillWork {
     result.tokens                       = suffix_tokens;
     result.vision_items                 = vision_items;
     result.vision_patches               = vision_patches;
-    const unsigned __int128 suffix      = suffix_tokens;
-    const unsigned __int128 linear      = static_cast<unsigned __int128>(prefix_tokens) * suffix;
-    const unsigned __int128 triangular  = suffix * (suffix + 1U) / 2U;
-    constexpr unsigned __int128 maximum = ~static_cast<unsigned __int128>(0);
-    const unsigned __int128 attention =
-        triangular > maximum - linear ? maximum : linear + triangular;
-    result.attention_pairs = attention > std::numeric_limits<std::uint64_t>::max()
-                                 ? std::numeric_limits<std::uint64_t>::max()
-                                 : static_cast<std::uint64_t>(attention);
+    const U128 suffix = ninfer::detail::u128_from64(suffix_tokens);
+    const U128 linear = ninfer::detail::u128_mul64(prefix_tokens, suffix_tokens);
+    const U128 triangular =
+        ninfer::detail::u128_shr(ninfer::detail::u128_mul64(suffix_tokens, suffix_tokens + 1U), 1);
+    constexpr U128 maximum = ninfer::detail::u128_not(ninfer::detail::u128_from64(0));
+    const U128 attention =
+        ninfer::detail::u128_gt(triangular, ninfer::detail::u128_sub(maximum, linear))
+            ? maximum
+            : ninfer::detail::u128_add(linear, triangular);
+    result.attention_pairs =
+        ninfer::detail::u128_gt(
+            attention, ninfer::detail::u128_from64(std::numeric_limits<std::uint64_t>::max()))
+        ? std::numeric_limits<std::uint64_t>::max()
+        : ninfer::detail::u128_to64(attention);
     return result;
 }
 
